@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="c18743f6-7e82-4043-99e7-6a9228ae11dc" name="47.105.34.29" url="http://47.105.34.29">
+        <fileTransfer host="47.105.34.29" port="22" rootFolder="/home/yufulou/go_workspace/" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" shareSSLContext="true" />
+          </advancedOptions>
+          <option name="port" value="22" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

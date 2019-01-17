@@ -1,0 +1,56 @@
+#1	类、接口和 trait 的保留关键字	如用到，改名处理	bool、int、float、string、NULL、TRUE、FALSE	
+2	["']\\0x\d+["']	十六进制字符串	去掉两边的引号，或者两边的引号改小括号	不在当作数字(数值型表示还是支持的，只是字符串样式的不在自动转换)
+3	["']\\u\{["']	包含 \u{ 字符串	双引号改单引号	由于新的 Unicode codepoint escape syntax语法，\u{会引起解析，比如"\u{aa}" 在php5输出会是原样，现在会输出对应的字符
+4	\d+\.[^\d]	以点号 ( . ) 结束的数值	点号后加0或者去掉点号	JSON 扩展已经被 JSOND 取代，这些都不在不支持
+5	\d\.+[\d\s]*[eE]	用e前面有点号的科学计数法表示的数值
+6	json_decode\(\s*["']{2}\s*\)	用空字符串表示的json串	用"[]"代替	
+7	HTTP_RAW_POST_DATA	$HTTP_RAW_POST_DATA	用 file_get_contents('php://input')	移除
+#8	INI 文件中 # 注释格式（适用于 php.ini 以用 parse_ini_file() 和 parse_ini_string() 函数来处理的文件）	用分号( ; )取代	移除	
+9	\$\$[\w_\d]+\[	类似表达式 $$foo['bar']['baz'] 的变量	用 ${$foo['bar']['baz']}	解析成 ${$foo['bar']['baz']} 变为 {$$foo}['bar']['baz']
+10	\$[\w_\d]+\s*\-\>\s*\$[\w_\d]+\[	类似表达式 $foo→$bar['baz'] 的变量	用 $foo→{$bar['baz']}	解析成 $foo→{$bar['baz']} 变为 {$foo→$bar}['baz']
+#11	类似表达式 $foo→$bar['baz']() 的变量	用 $foo→{$bar['baz']}()	解析成 $foo→{$bar['baz']}() 变为 ${foo→$bar}['baz']()	
+12	\$[\w_\d]+\s*::\s*\$[\w_\d]+\[	类似表达式 Foo::$bar['baz']() 的变量	用 Foo::{$bar['baz']}()	解析成 Foo::{$bar['baz']}() 变为{Foo::$bar}['baz']()
+13	xsl.security_prefs	配置指令 xsl.security_prefs 	用 XsltProcessor::setSecurityPrefs() 	移除
+14	(global|GLOBAL)\s*\$\$	global声明变量的范围	用 global ${$a} 的方法处理	只接受简单变量，类似 gloabl $$a 的用法不在支持；
+# 15	\&\s*(new|NEW)	new 语句创建的对象以引用的方式赋值给变量	去掉 new 前的 &	触发 Deprecated 改为抛出异常
+16	\byield\b	yield	用 (yield)	变为右连运算符
+17	\bnext\(	foreach 遍历数组	用 next() 移动	原数组移动指针当前位置变成不移动
+18	default\s\:	Switch 语句包含多个 default 块	保留最后一个default,其余删除	触发异常错误
+19	\blist\s*\([^)]+\[	list 给无字符索引数组赋值	array_reverse() 处理一下	赋值顺序从右到左变为从左到右
+20	\blist\s*\(\)	空的 list() 赋值	直接赋空值或删除相关代码	移除
+21	\blist[^=]*=\s*\$	list 分解字符串	用str_split()	移除
+22	\bfunction.*\&	函数引用传参	先把值先赋给一个变量，在以此为参数调用函数	非使用变量引用传参的会触发Notice
+23	\bsession_\w+\(	自定义的会话处理器(session handler)的使用的函数	加判断是否发生错误不可用，如发生错误，抛异常	发生错误时，报错由 error 变成 warning
+#24	构造函数出错	try {} catch(ParseError $e){ return null; } 处理一下	由返回null或不可用对象 变成 抛出异常
+#25	函数定义中包含多个参数同名	同一个函数中重名的参数改名	触发异常错误
+#26	set_exception_handler	set_exception_handler() 	指定的处理函数入参类型设置由Exception改为Throwable ，示例：	指定的处理函数收到的入参类型不一定是 Exception 对象 function handler(Exception $e) { ... }	 set_exception_handler('handler');	 改为 function handler(Throwable $e) { ... } set_exception_handler('handler');	
+27	\bdl\(	dl()	直接修改 php.ini 的设置加载相关模块吧？	在 PHP-FPM 不再可用
+28	\bmysql_	mysql 扩展	用 mysqli	移除
+29	\bmssql	mssql 扩展	用 sqlsrv	移除
+30	\bereg_	ereg 扩展	用 preg	移除
+31	\bcall_user_method\b	call_user_method() 	用 call_user_func()	移除
+32	\bcall_user_method_array\b	call_user_method_array()	用 call_user_func_array()
+33	\bmcrypt_generic_end\b	mcrypt_generic_end() 	用 mcrypt_generic_deinit()
+34	\bmcrypt_ecb\b	mcrypt_ecb()	加密用
+35	\bmcrypt_cbc\b	mcrypt_cbc()	mcrypt_encrypt ($cipher , $key , $data , 'ecb'|'cbc'|'cfb'|'ofb' [, string $iv] )
+36	\bmcrypt_cfb\b	mcrypt_cfb() 	解密用:
+37	\bmcrypt_ofb\b	mcrypt_ofb() 	mcrypt_decrypt ($cipher , $key , $data , 'ecb'|'cbc'|'cfb'|'ofb' [, string $iv] )
+38	\bimagepsbbox\b	imagepsbbox()	用TrueType 字体和相关的函数替代	已从GD扩展支持中移除
+39	\bimagepsencodefont\b	imagepsencodefont()
+40	\bimagepsextendfont\b	imagepsextendfont()
+41	\bimagepsfreefont\b	imagepsfreefont()
+42	\bimagepsloadfont\b	imagepsloadfont()
+43	\bimagepsslantfont\b	imagepsslantfont()
+44	\bimagepstext\b	imagepstext()
+45	\bfunc_get_arg\b	func_get_arg()	函数体内第一行调用，记录其值	不在用初值而是函数体内改变过的当前值
+46	\bfunc_get_args\b	func_get_args()
+47	\bdebug_backtrace\b	debug_backtrace() 
+48	\bdatefmt_set_timezone_id\b	datefmt_set_timezone_id() 	用 datefmt_set_timezone() 	移除
+49	\bIntlDateFormatter\s*::\s*setTimeZoneID	IntlDateFormatter::setTimeZoneID() 	用 IntlDateFormatter::setTimeZone()	移除
+50	\bset_socket_blocking\b	set_socket_blocking() 	用stream_set_blocking()	移除
+# 51	 json_decode()	 true，false 和 null如有大写的，改成小写	处理的json串只支持包含小写的字面量 true，false 和 null
+52	\bphp_logo_guid\b	php_logo_guid()		移除
+53	\bphp_egg_logo_guid\b	php_egg_logo_guid()		移除
+54	\bphp_real_logo_guid\b	php_real_logo_guid()		移除
+55	\bzend_logo_guid\b	zend_logo_guid()		移除
+56	\bsplit\b	split()	用preg_split()	移除
