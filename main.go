@@ -1,17 +1,21 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
-	"encoding/json"
+	"compress/gzip"
 	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"github.com/flier/gohs/hyperscan"
+	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"io"
-	"net"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +40,11 @@ var (
 	RegexMap map[int]RegexLine
 )
 
+type RequestVal struct{
+	Gin *gin.Context
+	Vars map[string]interface{}
+}
+
 type Response struct {
 	Errno int         `json:errno`
 	Msg   string      `json:msg`
@@ -43,6 +52,7 @@ type Response struct {
 }
 
 type MatchResp struct {
+	Line       int		 `json:line`
 	Id         int       `json:id`
 	From       int       `json:from`
 	To         int       `json:to`
@@ -82,21 +92,27 @@ func run(cmd *cobra.Command, args []string) {
 	// Todo add a goroutine to check if pattern file changed, and reload file.
 
 	// start web service
-	http.Handle("/", middleware(http.HandlerFunc(matchHandle)))
-	http.Handle("/_stats", middleware(http.HandlerFunc(statsHandle)))
+	//http.Handle("/", middleware(http.HandlerFunc(matchHandle)))
+	//http.Handle("/_stats", middleware(http.HandlerFunc(statsHandle)))
 
 	addr := fmt.Sprintf("0.0.0.0:%d", Port)
-	s := &http.Server{
+	r := gin.Default()
+	r.POST("/scanTar", scanTar)
+	if err := r.Run(":"+strconv.Itoa(Port)); err != nil {
+		log.Fatal(err)
+	}
+
+	/*s := &http.Server{
 		Addr:         addr,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
-	}
+	}*/
 	Uptime = time.Now()
 
 	fmt.Printf("[%s] gohs-ladon %s Running on %s\n", Uptime.Format(time.RFC3339), Version, addr)
-	if err := s.ListenAndServe(); err != nil {
+	/*if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)
-	}
+	}*/
 
 }
 
@@ -147,7 +163,7 @@ func buildScratch(filepath string) (err error) {
 			log.Info(fmt.Sprintf("line start with #, skip line: %s", line))
 			continue
 		}
-		s := strings.Split(line, "\t")
+		s := strings.SplitN(line, "\t", 3)
 		// length less than 3, skip
 		if len(s) < 3 {
 			log.Info(fmt.Sprintf("line length less than 3, skip line: %s", line))
@@ -186,66 +202,193 @@ func buildScratch(filepath string) (err error) {
 	return nil
 }
 
-func middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		end := time.Now()
-		latency := end.Sub(start)
-		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		log.WithFields(log.Fields{
-			"remote_addr":    host,
-			"latency":        latency,
-			"content_length": r.ContentLength,
-		}).Info(fmt.Sprintf("%s %s", r.Method, r.RequestURI))
-	})
-}
-
-func matchHandle(w http.ResponseWriter, r *http.Request) {
-	query := r.FormValue("q")
-	var resp Response = Response{Errno: 0}
-	w.Header().Set("Content-Type", "application/json")
-	if query == "" {
-		resp.Errno = -1
-		resp.Msg = "empty param q"
-	} else {
-		inputData := []byte(query)
-		// results
-		var matchResps []MatchResp
-		eventHandler := func(id uint, from, to uint64, flags uint, context interface{}) error {
-			log.Info(fmt.Sprintf("id: %d, from: %d, to: %d, flags: %v, context: %s", id, from, to, flags, context))
+func initScanner() (*map[string][]MatchResp, func(filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error){
+	var matchResps = make(map[string][]MatchResp, 100)
+	eventHandlerClosure := func (filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error {
+		return func(id uint, from, to uint64, flags uint, context interface{}) error {
 			regexLine, ok := RegexMap[int(id)]
-			if !ok {
-				regexLine = RegexLine{}
+			if !ok || 0 == int(to){
+				log.Info(fmt.Sprintf("id: %d, from: %d, to: %d, flags: %v, context: %s", id, from, to, flags, context))
+				return nil
 			}
-			matchResp := MatchResp{Id: int(id), From: int(from), To: int(to), Flags: int(flags), Context: fmt.Sprintf("%s", context), RegexLinev: regexLine}
-			matchResps = append(matchResps, matchResp)
+			matchResp := MatchResp{Line: lineno, Id: int(id), From: int(from), To: int(to), Flags: int(flags), Context: fmt.Sprintf("%s", context), RegexLinev: regexLine}
+			if _, ok := matchResps[filepath]; !ok {
+				matchResps[filepath] = make([]MatchResp, 0)
+			}
+			matchResps[filepath] = append(matchResps[filepath], matchResp)
 			return nil
 		}
-
-		// lock scratch
-		Scratch.Lock()
-		if err := Db.Scan(inputData, Scratch.s, eventHandler, inputData); err != nil {
-			logFields := log.Fields{"query": query}
-			log.WithFields(logFields).Error(err)
-			resp.Errno = -2
-			resp.Msg = fmt.Sprintf("Db.Scan error: %s", err)
-		} else {
-			if len(matchResps) <= 0 {
-				resp.Errno = 1
-				resp.Msg = "no match"
-			}
-			resp.Data = matchResps
-		}
-		// unlock scratch
-		Scratch.Unlock()
 	}
-	json.NewEncoder(w).Encode(resp)
-	w.WriteHeader(http.StatusOK)
+	return &matchResps, eventHandlerClosure
 }
 
-func statsHandle(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, fmt.Sprintf("gohs-ladon %v, Uptime %v",
-		Version, Uptime.Format(time.RFC3339)))
+func scanLine(query string, filepath string, lineno int, eventHandlerClosure func (filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error) error {
+	inputData := []byte(query)
+	// lock scratch
+	Scratch.Lock()
+	defer Scratch.Unlock()
+	// unlock scratch
+	if err := Db.Scan(inputData, Scratch.s, eventHandlerClosure(filepath, lineno), inputData); err != nil {
+		logFields := log.Fields{"query": query}
+		log.WithFields(logFields).Error(err)
+		return err
+	}
+	return nil
+}
+
+func getScanFunc(eventHandlerClosure func (filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error) func(path string, f os.FileInfo, err error) error{
+	return func(path string, f os.FileInfo, err error) error{
+		if f.IsDir() {
+			return nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		var lineno int
+		for scanner.Scan() {
+			lineno++
+			line := scanner.Text()
+			// line start with #, skip
+			if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.HasPrefix(strings.TrimSpace(line), "//") ||
+				strings.HasPrefix(strings.TrimSpace(line), "/*") || strings.HasPrefix(strings.TrimSpace(line), "*") || 0 == len(line) {
+				continue
+			}
+			scanLine(line, path, lineno, eventHandlerClosure)
+		}
+		return nil
+	}
+}
+
+func scanTar(c *gin.Context) {
+	matchResps, eventHandlerClosure := initScanner()
+	uploadDir := "upload_files"
+	// single file
+	file, err := c.FormFile("file")
+	if nil != err {
+		c.JSON(http.StatusOK, gin.H{"code":101, "msg": "file empty"})
+		return
+	}
+	if ! strings.HasSuffix(file.Filename, ".tar.gz") {
+		c.JSON(http.StatusOK, gin.H{"code":102, "msg": "you should upload tar.gz file"})
+		return
+	}
+	subPath := uploadDir + "/"+file.Filename
+	scanPath := c.PostForm("scan_path")
+	if 0 == len(scanPath) {
+		c.JSON(http.StatusOK, gin.H{"code":103, "msg": "scan_path empty"})
+		return
+	}
+	log.Println(file.Filename)
+
+	if err := os.Mkdir(uploadDir, 0755); nil != err && !os.IsExist(err) {
+		c.JSON(http.StatusOK, gin.H{"code":104, "msg": "create dir upload_files failed "+err.Error()})
+		return
+	}
+	if err := os.Mkdir(subPath, 0755); nil != err{
+		if os.IsExist(err) {
+			if err := os.RemoveAll(subPath); nil != err {
+				c.JSON(http.StatusOK, gin.H{"code": 203, "msg": "remove dir "+subPath+" failed "+err.Error()})
+				return
+			}
+			if err := os.Mkdir(subPath, 0755); nil != err{
+				c.JSON(http.StatusOK, gin.H{"code": 201, "msg": "create dir "+subPath+" failed "+err.Error()})
+				return
+			}
+		}else {
+			c.JSON(http.StatusOK, gin.H{"code": 202, "msg": "create dir "+subPath+" failed "+err.Error()})
+			return
+		}
+	}
+	if err := DeCompress(file, subPath+"/"); nil != err{
+		c.JSON(http.StatusOK, gin.H{"code":106, "msg": "decompress failed "+err.Error()})
+		return
+	}
+	if _, err := os.Stat(subPath+"/"+scanPath); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code":107, "msg": err.Error()})
+		return
+	}
+
+	scanFunc := getScanFunc(eventHandlerClosure)
+
+	Scandir(subPath+"/"+scanPath, scanFunc)
+
+	outputStr := formatOutputHtml(subPath, *matchResps)
+
+	c.String(200, outputStr)
+
+}
+
+func formatOutputHtml(prefix string, matchResps map[string][]MatchResp) string{
+	var strArr []string
+	var fileArr []string
+	strArr = append(strArr, "<body><table>")
+	strArr = append(strArr, "<tr><th>file</th><th>matchRuleName</th><th>line</th><th>desc</th></tr>")
+	for file, _ := range matchResps{
+		fileArr = append(fileArr, file)
+	}
+	sort.Strings(fileArr)
+	for _, file := range fileArr {
+		matchLines := matchResps[file]
+		for _, matchLine := range matchLines {
+			strArr = append(strArr, "<tr><td>" + strings.TrimPrefix(file, prefix) + ":" + strconv.Itoa(matchLine.Line) + ":" + strconv.Itoa(matchLine.From) + ":" + strconv.Itoa(matchLine.To) + "</td>")
+			strArr = append(strArr, "<td>" + matchLine.RegexLinev.Expr + "</td><td>" + matchLine.Context + "</td><td>" + matchLine.RegexLinev.Data + "</td></tr>")
+		}
+	}
+	strArr = append(strArr, "</table></body>")
+	return strings.Join(strArr, "")
+}
+
+func Scandir(dir string, visit func (path string, f os.FileInfo, err error) error){
+	err := filepath.Walk(dir, visit)
+	fmt.Printf("filepath.Walk() returned %v\n", err)
+}
+
+func DeCompress(fileUploaded *multipart.FileHeader, dest string) error {
+	srcFile, err := fileUploaded.Open()
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+	gr, err := gzip.NewReader(srcFile)
+	if err != nil {
+		return err
+	}
+	defer gr.Close()
+	tr := tar.NewReader(gr)
+	var file *os.File
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return err
+			}
+		}
+		filename := dest + hdr.Name
+		if strings.HasSuffix(filename, "/") {
+			err = os.Mkdir(filename, 0755)
+		}else{
+			file, err = createFile(filename)
+		}
+		if err != nil {
+			return err
+		}
+		if !strings.HasSuffix(filename, "/") {
+			io.Copy(file, tr)
+		}
+	}
+	return nil
+}
+
+func createFile(name string) (*os.File, error) {
+	err := os.MkdirAll(string([]rune(name)[0:strings.LastIndex(name, "/")]), 0755)
+	if err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	return os.Create(name)
 }

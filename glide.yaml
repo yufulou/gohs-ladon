@@ -12,3 +12,5 @@ import:
 - package: golang.org/x/crypto
   subpackages:
   - ssh/terminal
+- package: github.com/gin-gonic/gin
+  version: ^1.3.0
