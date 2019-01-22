@@ -15,12 +15,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"regexp"
 )
 
 // with sync for resource lock
@@ -118,6 +118,9 @@ func run(cmd *cobra.Command, args []string) {
 
 }
 
+/**
+ * 初始化各种基础变量，包括hyperscan正则库
+ */
 func preRunE(cmd *cobra.Command, args []string) error {
 	Debug = viper.GetBool("debug")
 	Port = viper.GetInt("port")
@@ -215,6 +218,9 @@ func buildScratch(filepath string) (err error) {
 	return nil
 }
 
+/**
+ * 返回hyperscan扫描器的eventHandler
+ */
 func initScanner() (*map[string][]MatchResp, func(filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error){
 	var matchResps = make(map[string][]MatchResp, 100)
 	eventHandlerClosure := func (filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error {
@@ -241,6 +247,9 @@ func initScanner() (*map[string][]MatchResp, func(filepath string, lineno int) f
 	return &matchResps, eventHandlerClosure
 }
 
+/**
+ * 用正则库匹配某一行代码
+ */
 func scanLine(query string, filepath string, lineno int, eventHandlerClosure func (filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error) error {
 	inputData := []byte(query)
 	// lock scratch
@@ -255,6 +264,9 @@ func scanLine(query string, filepath string, lineno int, eventHandlerClosure fun
 	return nil
 }
 
+/**
+ * 返回扫描某一文件的闭包
+ */
 func getScanFunc(eventHandlerClosure func (filepath string, lineno int) func(id uint, from, to uint64, flags uint, context interface{}) error) func(path string, f os.FileInfo, err error) error{
 	return func(path string, f os.FileInfo, err error) error{
 		if f.IsDir() {
@@ -282,6 +294,9 @@ func getScanFunc(eventHandlerClosure func (filepath string, lineno int) func(id 
 	}
 }
 
+/**
+ * 解压并扫描tar.gz压缩包指定路径的文件
+ */
 func scanTar(c *gin.Context) {
 	matchResps, eventHandlerClosure := initScanner()
 	uploadDir := "upload_files"
@@ -341,6 +356,9 @@ func scanTar(c *gin.Context) {
 
 }
 
+/**
+ * 输出html内容
+ */
 func formatOutputHtml(prefix string, matchResps map[string][]MatchResp) string{
 	var strArr []string
 	var fileArr []string
@@ -361,11 +379,17 @@ func formatOutputHtml(prefix string, matchResps map[string][]MatchResp) string{
 	return strings.Join(strArr, "")
 }
 
+/**
+ * 扫描指定目录
+ */
 func Scandir(dir string, visit func (path string, f os.FileInfo, err error) error){
 	err := filepath.Walk(dir, visit)
 	fmt.Printf("filepath.Walk() returned %v\n", err)
 }
 
+/*
+ * 解压tar.gz文件
+ */
 func DeCompress(fileUploaded *multipart.FileHeader, dest string) error {
 	srcFile, err := fileUploaded.Open()
 	if err != nil {
@@ -404,6 +428,9 @@ func DeCompress(fileUploaded *multipart.FileHeader, dest string) error {
 	return nil
 }
 
+/**
+ * 在指定路径创建文件
+ */
 func createFile(name string) (*os.File, error) {
 	err := os.MkdirAll(string([]rune(name)[0:strings.LastIndex(name, "/")]), 0755)
 	if err != nil && !os.IsExist(err) {
