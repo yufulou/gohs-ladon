@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"regexp"
 )
 
 // with sync for resource lock
@@ -38,6 +39,7 @@ var (
 	Db       hyperscan.BlockDatabase
 	Uptime   time.Time
 	RegexMap map[int]RegexLine
+	ExceptRegexMap map[int]*regexp.Regexp
 )
 
 type RequestVal struct{
@@ -132,6 +134,7 @@ func preRunE(cmd *cobra.Command, args []string) error {
 	}
 	log.Debug("Prerun", args)
 	RegexMap = make(map[int]RegexLine)
+	ExceptRegexMap = make(map[int]*regexp.Regexp)
 	err := buildScratch(FilePath)
 	return err
 }
@@ -156,6 +159,7 @@ func buildScratch(filepath string) (err error) {
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
+		var exceptPattern = ""
 		log.Debug(scanner.Text())
 		line := scanner.Text()
 		// line start with #, skip
@@ -163,7 +167,7 @@ func buildScratch(filepath string) (err error) {
 			log.Info(fmt.Sprintf("line start with #, skip line: %s", line))
 			continue
 		}
-		s := strings.SplitN(line, "\t", 3)
+		s := strings.SplitN(line, "\t", 4)
 		// length less than 3, skip
 		if len(s) < 3 {
 			log.Info(fmt.Sprintf("line length less than 3, skip line: %s", line))
@@ -175,6 +179,15 @@ func buildScratch(filepath string) (err error) {
 		}
 		expr = hyperscan.Expression(s[1])
 		data := s[2]
+
+		if len(s) == 4 && len(s[3])>0{
+			exceptPattern = s[3]
+			if regResult, err := regexp.Compile(exceptPattern); nil != err{
+				return err
+			}else{
+				ExceptRegexMap[id] = regResult
+			}
+		}
 		pattern := &hyperscan.Pattern{Expression: expr, Flags: flags, Id: id}
 		patterns = append(patterns, pattern)
 		RegexMap[id] = RegexLine{string(expr), data}
@@ -210,6 +223,12 @@ func initScanner() (*map[string][]MatchResp, func(filepath string, lineno int) f
 			if !ok || 0 == int(to){
 				log.Info(fmt.Sprintf("id: %d, from: %d, to: %d, flags: %v, context: %s", id, from, to, flags, context))
 				return nil
+			}
+			if regexpResult, ok := ExceptRegexMap[int(id)]; ok {
+				if regexpResult.MatchString(fmt.Sprintf("%s", context)){
+					log.Info(fmt.Sprintf("except regexp matched id: %d, context: %s", id, context))
+					return nil
+				}
 			}
 			matchResp := MatchResp{Line: lineno, Id: int(id), From: int(from), To: int(to), Flags: int(flags), Context: fmt.Sprintf("%s", context), RegexLinev: regexLine}
 			if _, ok := matchResps[filepath]; !ok {
